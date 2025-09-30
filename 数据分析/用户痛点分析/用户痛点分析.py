@@ -110,36 +110,120 @@ PRODUCT_PAIN_POINTS = {
 # 定义需要检查负面语境的模糊词
 AMBIGUOUS_KEYWORDS = ['卡', '慢', '重', '小', '低', '弱', '一般']
 
+# 定义正面词汇库（用于整体情感分析）
+POSITIVE_WORDS = [
+    '好', '很好', '不错', '满意', '喜欢', '推荐', '给力', '赞', '棒', '优秀',
+    '流畅', '清晰', '快', '强', '稳定', '耐用', '实惠', '值得', '超值',
+    '漂亮', '美观', '大气', '高级', '精致', '舒服', '舒适',
+    '完美', '惊喜', '超出预期', '物超所值', '性价比高', '物有所值'
+]
+
+# 定义明确的负面词汇库
+NEGATIVE_WORDS_STRONG = [
+    '差', '不好', '不行', '垃圾', '烂', '坑', '后悔', '失望', '糟糕',
+    '难用', '难受', '不满意', '不推荐', '不建议', '退货', '换货'
+]
+
+def analyze_sentiment(content):
+    """分析整条评论的情感倾向
+    返回: 'positive', 'negative', 或 'neutral'
+    """
+    # 统计正面词和负面词数量
+    positive_count = sum(1 for word in POSITIVE_WORDS if word in content)
+    negative_count = sum(1 for word in NEGATIVE_WORDS_STRONG if word in content)
+    
+    # 如果正面词明显多于负面词（2倍以上），判定为正面评论
+    if positive_count >= negative_count * 2 and positive_count > 0:
+        return 'positive'
+    
+    # 如果负面词多于正面词，判定为负面评论
+    if negative_count > positive_count:
+        return 'negative'
+    
+    # 检查是否有明确的正面表达
+    positive_phrases = ['非常满意', '很满意', '超级满意', '相当满意', '十分满意']
+    if any(phrase in content for phrase in positive_phrases):
+        return 'positive'
+    
+    return 'neutral'
+
 # 检查是否为真正的负面评论
 def is_negative_context(content, keyword):
-    """判断关键词是否出现在负面语境中"""
-    # 如果关键词本身就是明确的负面短语，直接返回True
-    if any(neg in keyword for neg in ['差', '不行', '不好', '太', '很', '问题']):
+    """判断关键词是否出现在负面语境中
+    需要同时考虑：
+    1. 整体评论的情感倾向
+    2. 关键词局部的表达方式
+    """
+    
+    # 第一步：分析整条评论的整体情感
+    overall_sentiment = analyze_sentiment(content)
+    
+    # 如果整体是正面评论，大概率不是痛点
+    if overall_sentiment == 'positive':
+        # 除非是明确的负面短语（如"续航差"、"拍照不行"）
+        if not any(neg in keyword for neg in ['差', '不行', '不好', '问题', '严重']):
+            return False
+    
+    # 第二步：检查关键词的局部表达
+    keyword_pos = content.find(keyword)
+    if keyword_pos == -1:
+        return False
+    
+    # 检查前面3个字符（捕获否定词）
+    prefix = content[max(0, keyword_pos - 3):keyword_pos]
+    
+    # 1. 优先排除明确的正面表达（否定词+痛点词）
+    # 如"不卡顿"、"没发热"、"无延迟"
+    negative_prefixes = ['不', '没', '无', '不会', '没有', '不存在', '没出现']
+    for neg in negative_prefixes:
+        if prefix.endswith(neg):
+            return False  # 这是正面表达"没有这个问题"
+    
+    # 2. 检查是否在"但是/不过"转折后（转折后才是真实评价）
+    # 例如："很流畅，但是有点卡" - 这里的"卡"才是痛点
+    before_keyword = content[:keyword_pos]
+    has_turn = any(turn in before_keyword[-30:] for turn in ['但是', '不过', '就是', '只是', '可是'])
+    
+    # 3. 对于本身就是明确负面短语的关键词
+    # 如"续航差"、"拍照不行"、"做工差"、"充电慢"
+    if any(neg in keyword for neg in ['差', '不行', '不好', '太', '问题', '严重', '慢']):
+        # 即使整体正面，但明确提到某个功能差，也算痛点
         return True
     
-    # 如果是模糊词，检查附近是否有负面情感词
-    if keyword in AMBIGUOUS_KEYWORDS:
-        # 查找关键词位置
-        keyword_pos = content.find(keyword)
-        if keyword_pos == -1:
-            return False
+    # 4. 对于模糊词（如"卡"、"热"），需要检查修饰词和整体语境
+    if keyword in AMBIGUOUS_KEYWORDS or len(keyword) <= 2:
+        # 获取前后15字的上下文
+        start = max(0, keyword_pos - 15)
+        end = min(len(content), keyword_pos + len(keyword) + 15)
+        local_context = content[start:end]
         
-        # 检查前后20个字符范围内是否有负面词
-        start = max(0, keyword_pos - 20)
-        end = min(len(content), keyword_pos + 20)
-        context = content[start:end]
+        # 检查是否有负面修饰词（表示程度）
+        negative_modifiers = [
+            '有点', '有些', '比较', '太', '很', '超级', '特别', '非常', '极其',
+            '严重', '明显', '总是', '老是', '经常', '容易', '爱', '稍微'
+        ]
+        has_negative_modifier = any(mod in local_context for mod in negative_modifiers)
         
-        # 如果上下文中有负面词，则认为是真正的痛点
-        has_negative = any(neg in context for neg in NEGATIVE_WORDS)
+        # 检查后缀（如"卡得不行"、"慢死了"）
+        suffix = content[keyword_pos:min(len(content), keyword_pos + 6)]
+        has_negative_suffix = any(s in suffix for s in ['得', '的很', '死了', '要命', '要死'])
         
-        # 排除明显的正面表达
-        positive_phrases = ['不卡', '流畅', '很好', '不错', '满意', '喜欢', '推荐']
-        has_positive = any(pos in context for pos in positive_phrases)
+        # 如果有转折词，或有负面修饰，或在负面评论中，才算痛点
+        if has_turn or has_negative_modifier or has_negative_suffix:
+            return True
         
-        return has_negative and not has_positive
+        # 如果整体是负面评论，也可能是痛点
+        if overall_sentiment == 'negative':
+            return True
+        
+        return False
     
-    # 其他明确的负面关键词短语直接返回True
-    return True
+    # 5. 其他明确的负面关键词短语
+    # 如果整体不是正面评论，判定为痛点
+    if overall_sentiment != 'positive':
+        return True
+    
+    return False
 
 # 检测各模块痛点
 print(f"\n▶ 产品模块痛点统计:")
